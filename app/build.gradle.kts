@@ -1,8 +1,15 @@
+import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
+val localPropertiesFile = rootProject.file("local.properties")
+val localProperties = Properties()
+localProperties.load(localPropertiesFile.inputStream())
+
+val MAPS_API_KEY: String = localProperties.getProperty("MAPS_API_KEY", "")
 
 android {
     namespace = "com.example.motogpx"
@@ -16,6 +23,7 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["MAPS_API_KEY"] = MAPS_API_KEY
     }
 
     buildTypes {
