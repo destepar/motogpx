@@ -4,18 +4,22 @@ import android.Manifest
 import android.app.*
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.os.Build
 import android.os.IBinder
+import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.*
-import android.widget.Toast
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
-class TrackingService : Service() {
+class TrackingService : Service(), SensorEventListener {
 
     companion object {
         const val ACTION_START = "com.example.motogpx.action.START"
@@ -28,16 +32,30 @@ class TrackingService : Service() {
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
-    private val pathPoints = mutableListOf<Location>()
+    private lateinit var sensorManager: SensorManager
+    private var accelerometer: Sensor? = null
+    private var lastAccel: Triple<Float, Float, Float>? = null
+
+    private val pathPoints = mutableListOf<Pair<Location, Triple<Float, Float, Float>?>>() // (Location, Acelerómetro)
 
     override fun onCreate() {
         super.onCreate()
+
+        // Init sensores
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        accelerometer?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+
+        // Init ubicación
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val location = result.lastLocation ?: return
-                pathPoints.add(location)  // Guardar ubicación
+                val accel = lastAccel
+                pathPoints.add(location to accel)
                 val intent = Intent(LOCATION_BROADCAST)
                 intent.putExtra(EXTRA_LOCATION, location)
                 sendBroadcast(intent)
@@ -69,7 +87,7 @@ class TrackingService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Tracking activo")
             .setContentText("Grabando ubicación en segundo plano")
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation) // pon tu icono
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentIntent(pendingIntent)
             .build()
 
@@ -87,12 +105,15 @@ class TrackingService : Service() {
             stopSelf()
             return
         }
-        pathPoints.clear()  // Limpiar rutas previas
+
+        pathPoints.clear()
         fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, mainLooper)
     }
 
     private fun stopTracking() {
         fusedLocationClient.removeLocationUpdates(locationCallback)
+        sensorManager.unregisterListener(this)
+
         val savedFilePath = saveGpxFile() ?: "No se guardó archivo"
         stopForeground(true)
         stopSelf()
@@ -108,8 +129,6 @@ class TrackingService : Service() {
         val timestamp = sdf.format(Date())
 
         val fileName = "MotoTrack_$timestamp.gpx"
-
-        // Carpeta Documents dentro de getExternalFilesDir
         val documentsDir = File(getExternalFilesDir(null), "Documents")
         if (!documentsDir.exists()) {
             documentsDir.mkdirs()
@@ -121,18 +140,25 @@ class TrackingService : Service() {
         return file.absolutePath
     }
 
-    private fun buildGpxContent(points: List<Location>): String {
+    private fun buildGpxContent(points: List<Pair<Location, Triple<Float, Float, Float>?>>): String {
         val sb = StringBuilder()
         sb.append("""<?xml version="1.0" encoding="UTF-8" standalone="no" ?> 
 <gpx version="1.1" creator="MOTOGPx" xmlns="http://www.topografix.com/GPX/1/1" >
 <trk><name>Track</name><trkseg>""")
-        points.forEach {
-            sb.append("\n<trkpt lat=\"${it.latitude}\" lon=\"${it.longitude}\"><ele>${it.altitude}</ele><time>${getTime(it)}</time></trkpt>")
+
+        points.forEach { (location, accel) ->
+            sb.append("\n<trkpt lat=\"${location.latitude}\" lon=\"${location.longitude}\">")
+            sb.append("<ele>${location.altitude}</ele>")
+            sb.append("<time>${getTime(location)}</time>")
+            accel?.let { (x, y, z) ->
+                sb.append("<desc>Acelerómetro x:$x y:$y z:$z</desc>")
+            }
+            sb.append("</trkpt>")
         }
+
         sb.append("\n</trkseg></trk></gpx>")
         return sb.toString()
     }
-
 
     private fun getTime(location: Location): String {
         val date = Date(location.time)
@@ -153,5 +179,17 @@ class TrackingService : Service() {
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
         }
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        event?.let {
+            if (it.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+                lastAccel = Triple(it.values[0], it.values[1], it.values[2])
+            }
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        // No usado
     }
 }
